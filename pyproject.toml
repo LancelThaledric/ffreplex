@@ -7,8 +7,14 @@ name = "ffreplex"
 requires-python = ">=3.12"
 dynamic = ["version"]
 dependencies = [
-    # Add runtime dependencies here
+    "rich"
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ffreplex"]
+exclude = []
+namespaces = false
 
 # Enables the usage of setuptools_scm
 [tool.setuptools_scm]
