@@ -2,6 +2,7 @@
 """ffreplex entry point"""
 
 import argparse
+import os
 import pprint
 import re
 import sys
@@ -94,7 +95,8 @@ class FFReplexGui(QtWidgets.QMainWindow):
 
         # Parse args and find files
         options = get_options()
-        self.files = list_files(options.input, re.compile(r'\.mkv$'))
+        pathabs = os.path.abspath(options.input)
+        self.files = list_files(pathabs, re.compile(r'\.mkv$'))
 
         # Find streams of first file
         self.streams, self.initial_streams = FFClient.read_streams(self.files[0])
@@ -112,6 +114,7 @@ class FFReplexGui(QtWidgets.QMainWindow):
         self.scroll_view = QtWidgets.QScrollArea()
         self.grid = QtWidgets.QGridLayout()
         self.scroll_view.setLayout(self.grid)
+        self.process_button = QtWidgets.QPushButton('START')
 
         self.file_widget = QtWidgets.QLabel(f'{len(self.files)} files – {self.files[0]}')
         self.video_widget = QtWidgets.QLabel(
@@ -119,6 +122,8 @@ class FFReplexGui(QtWidgets.QMainWindow):
         self.layout.addWidget(self.file_widget)
         self.layout.addWidget(self.video_widget)
         self.layout.addWidget(self.scroll_view)
+        self.layout.addWidget(self.process_button)
+        self.process_button.pressed.connect(self.process_files)
 
         self.audio_widgets = []
 
@@ -152,6 +157,14 @@ class FFReplexGui(QtWidgets.QMainWindow):
         stream['from_index'] = new_index
         # pprint.pprint(self.streams['audio'])
         # print('====================================')
+
+    started: bool = False
+
+    def process_files(self):
+        if self.started: return
+        self.started = True
+        self.scroll_view.setDisabled(True)
+        self.ffclient.ff_process_files(self.files, self.streams)
 
 
 if __name__ == "__main__":

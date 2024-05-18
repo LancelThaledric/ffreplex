@@ -1,11 +1,12 @@
 """Client functions to call ffmpeg subprocesses"""
 import json
 import os
+import pprint
 import re
 import shutil
 import subprocess
 import itertools
-from typing import TypedDict
+from typing import TypedDict, Dict, List, Tuple
 
 STANDARD_AUDIO_LAYOUTS = [
     'mono',
@@ -50,13 +51,17 @@ STEREO_COMPATIBLE = ['stereo', 'downmix']
 FIVE_ONE_COMPATIBLE = ['5.1', '5.1(side)']
 SEVEN_ONE_COMPATIBLE = ['7.1', '7.1(wide)',  '7.1(wide-side)', '7.1(top)']
 
-COMPATIBLE_DOWNMIXES = {
+type I_downmix_for_layout = tuple[list[str], str, str]
+type I_downmixes_map_for_layout = list[I_downmix_for_layout]
+type I_downmixes_map = dict[str, I_downmixes_map_for_layout]
+
+COMPATIBLE_DOWNMIXES: I_downmixes_map = {
     'stereo': [
-        (FIVE_ONE_COMPATIBLE, '5.1_to_2.0'),
-        (SEVEN_ONE_COMPATIBLE, '7.1_to_2.0')
+        (FIVE_ONE_COMPATIBLE, 'volume=1.66, pan=stereo|c0=0.5*c2+0.707*c0+0.707*c4+0.5*c3|c1=0.5*c2+0.707*c1+0.707*c5+0.5*c3', 'aac_at'),  # 5.1 to stereo
+        (SEVEN_ONE_COMPATIBLE, 'volume=1.66, pan=stereo|c0=0.5*c2+0.707*c0+0.707*c4+0.5*c3|c1=0.5*c2+0.707*c1+0.707*c5+0.5*c3', 'aac_at')  # 7.1 to stereo TODO change downmix function here
     ],
     '5.1': [
-        (SEVEN_ONE_COMPATIBLE, '7.1_to_5.1')
+        # (SEVEN_ONE_COMPATIBLE, '7.1_to_5.1', 'codec')  # 7.1 to 5.1
     ]
 }
 
@@ -64,6 +69,16 @@ COMPATIBLE_DOWNMIX_LAYOUTS = {
     key: set(itertools.chain.from_iterable([formats[0] for formats in COMPATIBLE_DOWNMIXES[key]]))
     for key in COMPATIBLE_DOWNMIXES.keys()
 }
+
+print('=== Available downmixes ===')
+for (layout, downmixes) in COMPATIBLE_DOWNMIXES.items():
+    print(f"- {layout} :")
+    if len(downmixes) == 0:
+        print(f"  None")
+    else:
+        for downmix in downmixes:
+            print(f"  - {', '.join(downmix[0])}")
+
 
 
 class AudioTrack:
@@ -130,8 +145,8 @@ class FFClient:
     def ff_create_empty_data():
         return {'video': [], 'audio': {}, 'subtitle': [], 'other': []}
 
-
-    def ff_get_info(self):
+    @staticmethod
+    def ff_get_info():
         """get info of system ffmpeg binary"""
         result = subprocess.run(['ffmpeg', '-version'], capture_output=True)
         version_match = FFClient.versionRegex.match(result.stdout.decode())
@@ -140,30 +155,6 @@ class FFClient:
             'path': path,
             'version': version_match.group(1)
         }
-
-    def ff_get_audio_streams(self, filepath: str):
-        """get streams content ordered by quality"""
-        cmd = ['ffprobe', '-show_streams', '-select_streams', 'a', '-loglevel', 'quiet', '-of', 'json', filepath]
-        res = subprocess.run(cmd, capture_output=True)
-        res_dict: dict = json.loads(res.stdout.decode())
-        streams: list = res_dict['streams']
-
-        result: dict[str, list[tuple[int, str]]] = {}
-        for stream in streams:
-            tags = stream.get('tags')
-            if tags is None:
-                break
-            language: str = tags.get('language')
-            if language is None:
-                break
-            if result.get(language) is None:
-                result[language] = []
-            result[language].append((stream.get('index'), stream.get('channel_layout')))
-
-        for lang in result:
-            result[lang].sort(key=lambda track: track[1], reverse=True)
-
-        return streams, result
 
     @staticmethod
     def read_streams(filepath: str):
@@ -293,12 +284,86 @@ class FFClient:
         return any(stream['layout'] in FIVE_ONE_COMPATIBLE
                    for stream in streams)
 
-    def ff_process_file(self, filepath: str, args=None):
-        """process given file by converting it to mp4 + process args supplied"""
-        if args is None:
-            args = []
-        newfile = os.path.splitext(filepath)[0] + '.mp4'
-        command = ['ffmpeg', '-i', filepath]
-        command.extend(args)
-        command.append(newfile)
-        # subprocess.run(command)
+    @staticmethod
+    def ff_get_command_args(streams: AllStreamsWithGenerables) -> str:
+
+        pprint.pprint(streams)
+        args = ["-strict -2",
+                "-global_quality:a 0"]
+
+        # video
+        current_video_index_out = 0
+        for stream in streams['video']:
+            args.append(f"-map 0:{stream['index']} -c:v:{current_video_index_out} copy")
+            current_video_index_out = current_video_index_out + 1
+
+        # audio
+        current_audio_index_out = 0
+        for lang in streams['audio']:
+            streams_of_lang = streams['audio'][lang]
+            for stream in streams_of_lang:
+                index = stream.get('index')
+                layout = stream.get('layout')
+                from_index = stream.get('from_index')
+                if from_index is None:
+                    if index is not None:
+                        print(f' REMOVE ─ 0:{index} {lang}({layout})')
+                    else:
+                        print(f'   PASS ─ {lang}({layout})')
+                    pass
+                else:
+                    # print(lang.upper(), stream)
+                    if index is not None and from_index == index:
+                        # Copy audio
+                        args.append(f"-map 0:{stream['from_index']} -c:a:{current_audio_index_out} copy")
+                        print(f'   KEEP ─ 0:a:{current_audio_index_out} {lang}({layout}) FROM 0:{from_index} {lang}({layout})')
+
+                    elif from_index is not None:
+                        # Convert audio
+                        def find_stream_fn(x: AudioExistentStream) -> bool:
+                            return x.get('index') == from_index
+                        from_stream = next(x for x in streams_of_lang if find_stream_fn(x))
+                        from_layout = from_stream.get('layout')
+                        print(f'CONVERT ┬ 0:a:{current_audio_index_out} {lang}({layout}) FROM 0:{from_index} {lang}({from_layout})')
+
+                        def find_downstream(x: I_downmix_for_layout) -> bool:
+                            return from_layout in x[0]
+                        downmix_from, downmix_filter, downmix_codec = next(x for x in COMPATIBLE_DOWNMIXES[layout] if find_downstream(x))
+                        print("        └── with :", downmix_filter, downmix_codec)
+
+                        args.append(f"-map 0:{stream['from_index']} -c:a:{current_audio_index_out} {downmix_codec} \\\n"
+                                    f"     -filter:a:{current_audio_index_out} \"{downmix_filter}\"")
+
+                    current_audio_index_out = current_audio_index_out + 1
+
+        # subtitles
+        current_other_index_out = current_video_index_out + current_audio_index_out
+        for stream in streams['subtitle']:
+            args.append(f"-map 0:{stream['index']} -c:{current_other_index_out} mov_text")
+            current_other_index_out = current_other_index_out + 1
+        # other
+        for stream in streams['other']:
+            args.append(f"-map 0:{stream['index']} -c:{current_other_index_out} copy")
+            current_other_index_out = current_other_index_out + 1
+
+        return " \\\n ".join(args)
+
+    @staticmethod
+    def ff_get_command(file: str, command_args: str) -> str:
+        in_file = file
+        out_file = os.path.splitext(file)[0]+'.ffreplex.mp4'
+        return f'ffmpeg -i "{in_file.replace(r'"', r'\"')}" \\\n {command_args} \\\n "{out_file.replace(r'"', r'\"')}"'
+
+    @staticmethod
+    def ff_process_files(files: list[str], streams: AllStreamsWithGenerables):
+        print(files)
+
+        args = FFClient.ff_get_command_args(streams)
+        commands = [FFClient.ff_get_command(file, args) for file in files]
+        for c in commands:
+            print(c)
+
+    @staticmethod
+    def ff_process_file(file: str):
+        print(file)
+
