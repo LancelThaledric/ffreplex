@@ -26,7 +26,7 @@ def get_options():
     return parser.parse_args()
 
 
-class FFStreamWidget(QtWidgets.QWidget):
+class FFStreamWidget(QtWidgets.QFrame):
 
     changed = Signal(object)
 
@@ -65,10 +65,13 @@ class FFStreamWidget(QtWidgets.QWidget):
         self.layout.addWidget(self.label)
         self.layout.addWidget(self.combo_box)
         self.setLayout(self.layout)
+        self.layout.setStretch(1, 1)
 
         # Reactive stuff
 
         self.combo_box.activated.connect(self.on_change)
+
+        # Styling
 
     @Slot(int)
     def on_change(self, value):
@@ -123,12 +126,20 @@ class FFReplexGui(QtWidgets.QMainWindow):
             self.grid.setRowMinimumHeight(i, 24)
             self.audio_widgets.append({})
             self.audio_widgets[i]['language'] = QtWidgets.QLabel()
-            self.audio_widgets[i]['language'].setText(audio_lang)
+            self.audio_widgets[i]['language'].setText(audio_lang.upper())
+            self.audio_widgets[i]['language'].setStyleSheet("""
+                border-left-width: 2px;
+                border-style: solid;
+                border-color: darkblue;
+                padding-left: 16;
+                font-weight: bold;
+            """)
             self.grid.addWidget(self.audio_widgets[i]['language'], i, 0)
             self.audio_widgets[i]['streams'] = []
             for j, audio_stream in enumerate(audio_streams_of_lang):
                 self.audio_widgets[i]['streams'].append(FFStreamWidget(audio_stream, audio_streams_of_lang))
                 self.grid.addWidget(self.audio_widgets[i]['streams'][j], i, j + 1)
+                self.grid.setColumnStretch(j + 1, 1)
 
                 self.audio_widgets[i]['streams'][j].changed.connect(self.on_change)
 
