@@ -97,7 +97,7 @@ class VideoExistentStream(ExistentStream):
     height: int
 
 
-type StreamList = list[ExistentStream]
+type ExistentStreamList = list[ExistentStream]
 
 type AudioStreamList = dict[str, list[AudioExistentStream]]
 type AudioGenerableStreamList = dict[str, list[AudioExistentStream | AudioGenerableStream]]
@@ -106,17 +106,17 @@ type VideoStreamList = list[VideoExistentStream]
 
 
 class AllStreams(TypedDict):
-    video: StreamList
+    video: VideoStreamList
     audio: AudioStreamList
-    subtitle: StreamList
-    other: StreamList
+    subtitle: ExistentStreamList
+    other: ExistentStreamList
 
 
 class AllStreamsWithGenerables(TypedDict):
-    video: StreamList
+    video: VideoStreamList
     audio: AudioGenerableStreamList
-    subtitle: StreamList
-    other: StreamList
+    subtitle: ExistentStreamList
+    other: ExistentStreamList
 
 
 class FFClient:
@@ -125,6 +125,11 @@ class FFClient:
     layoutStereoRegex = re.compile(r'^stereo')
     layoutFiveRegex = re.compile(r'^5\.1')
     layoutSevenRegex = re.compile(r'^7\.1')
+
+    @staticmethod
+    def ff_create_empty_data():
+        return {'video': [], 'audio': {}, 'subtitle': [], 'other': []}
+
 
     def ff_get_info(self):
         """get info of system ffmpeg binary"""
@@ -176,7 +181,7 @@ class FFClient:
         if not data:
             raise TypeError()
 
-        streams: AllStreams = {'video': [], 'audio': {}, 'subtitle': [], 'other': []}
+        streams: AllStreams = FFClient.ff_create_empty_data()
         for stream in data:
             if stream['codec_type'] == 'video':
                 streams['video'].append({
@@ -191,6 +196,7 @@ class FFClient:
                     streams['audio'][lang] = []
                 streams['audio'][lang].append({
                     'index': stream['index'],
+                    'from_index': stream['index'],
                     'layout': stream['channel_layout'],
                     'title': stream.get('tags', {}).get('title')
                 })
@@ -238,15 +244,17 @@ class FFClient:
                         lambda stream: stream['layout'] in COMPATIBLE_DOWNMIX_LAYOUTS['stereo'],
                         existent_streams_of_lang
                     ))
-                    stream['from_index'] = compatible_sources[0]['index'] if len(compatible_sources) else None
+                    # stream['from_index'] = compatible_sources[0]['index'] if len(compatible_sources) else None
                     stream['from_compatible'] = [source['index'] for source in compatible_sources] if len(compatible_sources) else None
                 elif stream['layout'] in FIVE_ONE_COMPATIBLE:
                     compatible_sources = list(filter(
                         lambda stream: stream['layout'] in COMPATIBLE_DOWNMIX_LAYOUTS['5.1'],
                         existent_streams_of_lang
                     ))
-                    stream['from_index'] = compatible_sources[0]['index'] if len(compatible_sources) else None
+                    # stream['from_index'] = compatible_sources[0]['index'] if len(compatible_sources) else None
                     stream['from_compatible'] = [source['index'] for source in compatible_sources]
+
+                stream['from_index'] = stream['index']
 
             # stereo generation
             if not FFClient.audio_lang_has_stereo(streams['audio'][lang]):
