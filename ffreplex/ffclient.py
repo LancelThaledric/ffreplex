@@ -339,19 +339,20 @@ class FFClient:
         return args
 
     @staticmethod
-    def ff_get_command(file: str, command_args: list[str]) -> tuple[str, list[str]]:
+    def ff_get_command(file: str, command_args: list[str], rootdir: str | None) -> tuple[str, list[str], str]:
         in_file = file
-        out_file = os.path.splitext(file)[0]+'.ffreplex.mp4'
+        relpath = os.path.relpath(in_file, rootdir)
+        out_file = os.path.splitext(file)[0]+'.ffreplex.mp4' if rootdir is None else os.path.join(rootdir + '.ffreplex', os.path.splitext(relpath)[0]+'.mp4')
 
         program = 'ffmpeg'
         arguments = ['-y', '-i', in_file]
         arguments.extend(command_args)
         arguments.append(out_file)
 
-        return program, arguments
+        return program, arguments, out_file
 
     @staticmethod
-    def ff_get_commands(files: list[str], streams: AllStreamsWithGenerables, iostream: StringIO):
+    def ff_get_commands(files: list[str], streams: AllStreamsWithGenerables, rootdir: str | None, iostream: StringIO):
         args = FFClient.ff_get_command_args(streams, iostream)
-        commands = [FFClient.ff_get_command(file, args) for file in files]
+        commands = [FFClient.ff_get_command(file, args, rootdir) for file in files]
         return commands

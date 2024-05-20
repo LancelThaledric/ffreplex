@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import os
+import pathlib
 import pprint
 import re
 import sys
@@ -115,7 +116,6 @@ class FFReplexGui(QtWidgets.QMainWindow):
         self.system_ffmpeg = FFReplexGui.ffclient.ff_get_info()
 
         # Setup Processes
-
         self.parent_process = QObject()
         self.process_count = 1
         self.processes: list[FFProcess] = []
@@ -123,21 +123,14 @@ class FFReplexGui(QtWidgets.QMainWindow):
         self.commands: list[tuple[str, list[str]]] = []
         self.remaining_tasks = 0
 
-        # self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        # self.process.readyReadStandardOutput.connect(self.on_process_message)
-        # self.process.readyReadStandardError.connect(self.on_process_error)
-        # self.process.finished.connect(self.on_finish)
-
         # Parse args and find files
         options = get_options()
         pathabs = os.path.abspath(options.input)
         self.files = list_files(pathabs, re.compile(r'\.mkv$'))
+        self.dir = pathabs if os.path.isdir(pathabs) else None
 
         # Find streams of first file
         self.streams, self.initial_streams = FFClient.read_streams(self.files[0])
-        # print(self.initial_streams)
-        # pprint.pprint(self.streams['audio'])
-        # print('====================================')
 
         # Print window
         self.setWindowTitle(f"FFReplex – {self.files[0]}")
@@ -269,7 +262,7 @@ class FFReplexGui(QtWidgets.QMainWindow):
         self.started = True
         self.scroll_view.setDisabled(True)
         self.process_widget.setDisabled(True)
-        self.commands = self.ffclient.ff_get_commands(self.files, self.streams, self.iostream)
+        self.commands = self.ffclient.ff_get_commands(self.files, self.streams, self.dir, self.iostream)
 
         self.console.appendPlainText(self.iostream.getvalue())
 
@@ -296,6 +289,7 @@ class FFReplexGui(QtWidgets.QMainWindow):
         command = self.commands[next_command_id]
         self.console.appendPlainText(f' === Starting process of file #{next_command_id} on thread [{index}]\n\n')
         self.console.appendPlainText(f' > {command[0]} {' '.join(command[1])}\n')
+        pathlib.Path(os.path.dirname(command[2])).mkdir(parents=True, exist_ok=True)
         self.processes[index].start(command[0], command[1])
 
 
