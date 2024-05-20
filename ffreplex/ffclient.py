@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import itertools
+from io import StringIO
 from typing import TypedDict, Dict, List, Tuple
 
 STANDARD_AUDIO_LAYOUTS = [
@@ -69,15 +70,6 @@ COMPATIBLE_DOWNMIX_LAYOUTS = {
     key: set(itertools.chain.from_iterable([formats[0] for formats in COMPATIBLE_DOWNMIXES[key]]))
     for key in COMPATIBLE_DOWNMIXES.keys()
 }
-
-print('=== Available downmixes ===')
-for (layout, downmixes) in COMPATIBLE_DOWNMIXES.items():
-    print(f"- {layout} :")
-    if len(downmixes) == 0:
-        print(f"  None")
-    else:
-        for downmix in downmixes:
-            print(f"  - {', '.join(downmix[0])}")
 
 
 
@@ -285,16 +277,15 @@ class FFClient:
                    for stream in streams)
 
     @staticmethod
-    def ff_get_command_args(streams: AllStreamsWithGenerables) -> str:
+    def ff_get_command_args(streams: AllStreamsWithGenerables, iostream: StringIO) -> list[str]:
 
-        pprint.pprint(streams)
-        args = ["-strict -2",
-                "-global_quality:a 0"]
+        args = ["-strict", "-2",
+                "-global_quality:a", "0"]
 
         # video
         current_video_index_out = 0
         for stream in streams['video']:
-            args.append(f"-map 0:{stream['index']} -c:v:{current_video_index_out} copy")
+            args.extend(['-map', f'0:{stream['index']}', f'-c:v:{current_video_index_out}', 'copy'])
             current_video_index_out = current_video_index_out + 1
 
         # audio
@@ -307,16 +298,15 @@ class FFClient:
                 from_index = stream.get('from_index')
                 if from_index is None:
                     if index is not None:
-                        print(f' REMOVE ─ 0:{index} {lang}({layout})')
+                        print(f' REMOVE ─ 0:{index} {lang}({layout})', file=iostream)
                     else:
-                        print(f'   PASS ─ {lang}({layout})')
+                        print(f'   PASS ─ {lang}({layout})', file=iostream)
                     pass
                 else:
-                    # print(lang.upper(), stream)
                     if index is not None and from_index == index:
                         # Copy audio
-                        args.append(f"-map 0:{stream['from_index']} -c:a:{current_audio_index_out} copy")
-                        print(f'   KEEP ─ 0:a:{current_audio_index_out} {lang}({layout}) FROM 0:{from_index} {lang}({layout})')
+                        args.extend(['-map', f'0:{stream['from_index']}', f'-c:a:{current_audio_index_out}', 'copy'])
+                        print(f'   KEEP ─ 0:a:{current_audio_index_out} {lang}({layout}) FROM 0:{from_index} {lang}({layout})', file=iostream)
 
                     elif from_index is not None:
                         # Convert audio
@@ -324,44 +314,48 @@ class FFClient:
                             return x.get('index') == from_index
                         from_stream = next(x for x in streams_of_lang if find_stream_fn(x))
                         from_layout = from_stream.get('layout')
-                        print(f'CONVERT ┬ 0:a:{current_audio_index_out} {lang}({layout}) FROM 0:{from_index} {lang}({from_layout})')
+                        print(f'CONVERT ┬ 0:a:{current_audio_index_out} {lang}({layout}) FROM 0:{from_index} {lang}({from_layout})', file=iostream)
 
                         def find_downstream(x: I_downmix_for_layout) -> bool:
                             return from_layout in x[0]
                         downmix_from, downmix_filter, downmix_codec = next(x for x in COMPATIBLE_DOWNMIXES[layout] if find_downstream(x))
-                        print("        └── with :", downmix_filter, downmix_codec)
+                        print(f"        └── with : {downmix_filter}, {downmix_codec}", file=iostream)
 
-                        args.append(f"-map 0:{stream['from_index']} -c:a:{current_audio_index_out} {downmix_codec} \\\n"
-                                    f"     -filter:a:{current_audio_index_out} \"{downmix_filter}\"")
+                        args.extend(['-map', f'0:{stream['from_index']}', f'-c:a:{current_audio_index_out}',
+                                     downmix_codec, f'-filter:a:{current_audio_index_out}', f'{downmix_filter}'])
 
                     current_audio_index_out = current_audio_index_out + 1
 
         # subtitles
         current_other_index_out = current_video_index_out + current_audio_index_out
         for stream in streams['subtitle']:
-            args.append(f"-map 0:{stream['index']} -c:{current_other_index_out} mov_text")
+            args.extend(['-map', f'0:{stream['index']}', f'-c:{current_other_index_out}', 'mov_text'])
             current_other_index_out = current_other_index_out + 1
         # other
         for stream in streams['other']:
-            args.append(f"-map 0:{stream['index']} -c:{current_other_index_out} copy")
+            args.extend(['-map', f'0:{stream['index']}', f'-c:{current_other_index_out}', 'copy'])
             current_other_index_out = current_other_index_out + 1
 
-        return " \\\n ".join(args)
+        return args
 
     @staticmethod
-    def ff_get_command(file: str, command_args: str) -> str:
+    def ff_get_command(file: str, command_args: list[str]) -> tuple[str, list[str]]:
+        print(file)
         in_file = file
         out_file = os.path.splitext(file)[0]+'.ffreplex.mp4'
-        return f'ffmpeg -i "{in_file.replace(r'"', r'\"')}" \\\n {command_args} \\\n "{out_file.replace(r'"', r'\"')}"'
+
+        program = 'ffmpeg'
+        arguments = ['-y', '-i', in_file]
+        arguments.extend(command_args)
+        arguments.append(out_file)
+
+        return program, arguments
 
     @staticmethod
-    def ff_process_files(files: list[str], streams: AllStreamsWithGenerables):
-        print(files)
-
-        args = FFClient.ff_get_command_args(streams)
+    def ff_get_commands(files: list[str], streams: AllStreamsWithGenerables, iostream: StringIO):
+        args = FFClient.ff_get_command_args(streams, iostream)
         commands = [FFClient.ff_get_command(file, args) for file in files]
-        for c in commands:
-            print(c)
+        return commands
 
     @staticmethod
     def ff_process_file(file: str):
