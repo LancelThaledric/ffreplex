@@ -2,6 +2,7 @@
 """ffreplex entry point"""
 
 import argparse
+import asyncio
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import pprint
 import re
 import sys
 import random
+import threading
 from io import StringIO
 from typing import List, Tuple
 
@@ -21,6 +23,7 @@ from ffreplex.ffclient import FFClient, AudioExistentStream, AudioGenerableStrea
     AudioStreamList, COMPATIBLE_DOWNMIXES
 from ffreplex.filewalk import list_files
 
+
 def get_options():
     description = ''
     parser = argparse.ArgumentParser(description=description)
@@ -31,14 +34,23 @@ def get_options():
     return parser.parse_args()
 
 
-class FFStreamWidget(QtWidgets.QFrame):
+class FFProcess(QProcess):
+    index: int
 
+    def __init__(self, index: int):
+        super().__init__()
+        self.index = index
+
+
+class FFStreamWidget(QtWidgets.QFrame):
     changed = Signal(object)
 
     def __init__(self, stream: AudioGenerableStream | AudioExistentStream,
                  streams_of_lang: list[AudioExistentStream | AudioGenerableStream]):
         super().__init__()
         self.stream = stream
+
+        # Setup UI
 
         self.label = QtWidgets.QLabel()
         self.layout = QtWidgets.QHBoxLayout()
@@ -55,6 +67,7 @@ class FFStreamWidget(QtWidgets.QFrame):
         if from_compatible is not None:
             for from_index in from_compatible:
                 def find_stream_fn(x: AudioExistentStream) -> bool: return x.get('index') == from_index
+
                 from_stream = next(x for x in streams_of_lang if find_stream_fn(x))
                 self.combo_box.addItem(f'GENERATE FROM | {from_stream['title']}', from_stream['index'])
 
@@ -84,6 +97,10 @@ class FFStreamWidget(QtWidgets.QFrame):
         self.changed.emit((self.stream, data))
 
 
+async def wait():
+    await asyncio.sleep(0.5)
+
+
 class FFReplexGui(QtWidgets.QMainWindow):
     """GUI for ffreplex task"""
 
@@ -97,24 +114,24 @@ class FFReplexGui(QtWidgets.QMainWindow):
         super().__init__()
         self.system_ffmpeg = FFReplexGui.ffclient.ff_get_info()
 
-        self.parent_process = QObject()
-        self.process = QProcess(self.parent_process)
-        self.commands: list[tuple[str, list[str]]] = []
-        self.command_execution = 0
+        # Setup Processes
 
-        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self.process.readyReadStandardOutput.connect(self.on_process_message)
-        self.process.readyReadStandardError.connect(self.on_process_error)
-        self.process.finished.connect(self.on_finish)
+        self.parent_process = QObject()
+        self.process_count = 1
+        self.processes: list[FFProcess] = []
+        self.command_distribution: list[list[int]] = []
+        self.commands: list[tuple[str, list[str]]] = []
+        self.remaining_tasks = 0
+
+        # self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        # self.process.readyReadStandardOutput.connect(self.on_process_message)
+        # self.process.readyReadStandardError.connect(self.on_process_error)
+        # self.process.finished.connect(self.on_finish)
 
         # Parse args and find files
         options = get_options()
         pathabs = os.path.abspath(options.input)
         self.files = list_files(pathabs, re.compile(r'\.mkv$'))
-
-        print("\n=== FILES :\n")
-        for file in self.files:
-            print('-', file)
 
         # Find streams of first file
         self.streams, self.initial_streams = FFClient.read_streams(self.files[0])
@@ -139,13 +156,27 @@ class FFReplexGui(QtWidgets.QMainWindow):
         monospace_font.setStyleHint(QFont.Monospace)
         self.console.setFont(monospace_font)
 
+        self.process_widget = QtWidgets.QFrame()
+        self.process_layout = QtWidgets.QHBoxLayout()
+        self.threads_label = QtWidgets.QLabel('Threads :')
+        self.spinbox = QtWidgets.QSpinBox()
+        self.spinbox.setMaximum(12)
+        self.spinbox.setMinimum(1)
+        self.spinbox.setValue(4)
+
+        self.process_layout.addWidget(self.threads_label)
+        self.process_layout.addWidget(self.spinbox)
+        self.process_layout.addWidget(self.process_button)
+        self.process_widget.setLayout(self.process_layout)
+        self.process_layout.setStretch(2, 1)
+
         self.file_widget = QtWidgets.QLabel(f'{len(self.files)} files – {self.files[0]}')
         self.video_widget = QtWidgets.QLabel(
             f'Video : {len(self.streams['video'])} streams – {self.streams['video'][0]['width']}x{self.streams['video'][0]['height']} | {self.streams['video'][0]['display_aspect_ratio']}')
         self.layout.addWidget(self.file_widget)
         self.layout.addWidget(self.video_widget)
         self.layout.addWidget(self.scroll_view)
-        self.layout.addWidget(self.process_button)
+        self.layout.addWidget(self.process_widget)
         self.process_button.pressed.connect(self.process_files)
         self.layout.addWidget(self.console)
         self.layout.setStretch(0, 0)
@@ -188,24 +219,6 @@ class FFReplexGui(QtWidgets.QMainWindow):
         # pprint.pprint(self.streams['audio'])
         # print('====================================')
 
-    started: bool = False
-
-    def process_files(self):
-        if self.started: return
-
-        self.started = True
-        self.scroll_view.setDisabled(True)
-        self.process_button.setDisabled(True)
-        self.commands = self.ffclient.ff_get_commands(self.files, self.streams, self.iostream)
-
-        # print("\n === Commands === \n", file=self.iostream)
-        # for c in commands:
-            # print(c[0], pprint.pformat(c[1], width=100), file=iostream)
-            # print(c[0], ' '.join(c[1]), file=self.iostream)
-
-        self.console.appendPlainText(self.iostream.getvalue())
-        self.start_next_command()
-
     def print_console(self):
         self.console.appendPlainText(' === FFReplex === \n')
         self.console.appendPlainText(' === Available downmixes === \n')
@@ -237,20 +250,53 @@ class FFReplexGui(QtWidgets.QMainWindow):
         self.console.appendPlainText(output)
 
     @Slot()
-    def on_finish(self):
-        self.started = False
-        self.scroll_view.setDisabled(False)
-        self.process_button.setDisabled(False)
-        self.start_next_command()
+    def on_process_finish(self):
+        process = self.sender()
+        self.remaining_tasks = self.remaining_tasks - 1
+        if self.remaining_tasks == 0:
+            self.console.appendPlainText('\n === FINISHED ===')
+            self.started = False
+            self.scroll_view.setDisabled(False)
+            self.process_widget.setDisabled(False)
+        elif process is not None and process.index is not None:
+            self.start_next_command(process.index)
 
-    def start_next_command(self):
-        print(len(self.commands), self.command_execution)
-        if self.command_execution < len(self.commands):
-            command = self.commands[self.command_execution]
-            self.console.appendPlainText(' === Run Command === \n')
-            self.console.appendPlainText(f'{command[0]} {' '.join(command[1])}')
-            self.process.start(command[0], command[1])
-            self.command_execution = self.command_execution + 1
+    started: bool = False
+
+    def process_files(self):
+        if self.started: return
+
+        self.started = True
+        self.scroll_view.setDisabled(True)
+        self.process_widget.setDisabled(True)
+        self.commands = self.ffclient.ff_get_commands(self.files, self.streams, self.iostream)
+
+        self.console.appendPlainText(self.iostream.getvalue())
+
+        # Here : populate self.process_count
+        self.process_count = self.spinbox.value()
+        self.remaining_tasks = len(self.commands)
+        self.command_distribution = [[] for _ in range(self.process_count)]
+        for i in range(self.remaining_tasks):
+            self.command_distribution[i % self.process_count].append(i)
+        self.processes = [FFProcess(index=i) for i in range(self.process_count)]
+        for process in self.processes:
+            process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            process.readyReadStandardOutput.connect(self.on_process_message)
+            process.readyReadStandardError.connect(self.on_process_error)
+            process.finished.connect(self.on_process_finish)
+            self.start_next_command(process.index)
+
+    def start_next_command(self, index):
+        if len(self.command_distribution[index]) == 0:
+            return
+        next_command_id = self.command_distribution[index].pop(0)
+        while self.processes[index].state() is not QProcess.ProcessState.NotRunning:
+            asyncio.run(wait())
+        command = self.commands[next_command_id]
+        self.console.appendPlainText(f' === Starting process of file #{next_command_id} on thread [{index}]\n\n')
+        self.console.appendPlainText(f' > {command[0]} {' '.join(command[1])}\n')
+        self.processes[index].start(command[0], command[1])
 
 
 if __name__ == "__main__":

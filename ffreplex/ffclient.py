@@ -340,7 +340,6 @@ class FFClient:
 
     @staticmethod
     def ff_get_command(file: str, command_args: list[str]) -> tuple[str, list[str]]:
-        print(file)
         in_file = file
         out_file = os.path.splitext(file)[0]+'.ffreplex.mp4'
 
@@ -356,8 +355,3 @@ class FFClient:
         args = FFClient.ff_get_command_args(streams, iostream)
         commands = [FFClient.ff_get_command(file, args) for file in files]
         return commands
-
-    @staticmethod
-    def ff_process_file(file: str):
-        print(file)
-

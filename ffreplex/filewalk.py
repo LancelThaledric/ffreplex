@@ -16,4 +16,5 @@ def list_files(folder, pattern: Pattern[str]):
                     result.append(path)
             else:
                 result.extend(list_files(path, pattern))
+        result.sort()
         return result
