@@ -4,35 +4,17 @@
 import argparse
 import asyncio
 import io
-import json
 import os
 import pathlib
-import pprint
 import re
 import sys
-import random
-import threading
-from io import StringIO
-from typing import List, Tuple
 
 from PySide6 import QtCore, QtWidgets, QtGui
 from PySide6.QtGui import QAction, QKeySequence, QFont
-from PySide6.QtWidgets import QApplication, QPushButton
 from PySide6.QtCore import Slot, Signal, QObject, QProcess
 
-from ffreplex.ffclient import FFClient, AudioExistentStream, AudioGenerableStream, AllStreamsWithGenerables, AllStreams, \
-    AudioStreamList, COMPATIBLE_DOWNMIXES
+from ffreplex.ffclient import FFClient, COMPATIBLE_DOWNMIXES
 from ffreplex.filewalk import list_files
-
-
-def get_options():
-    description = ''
-    parser = argparse.ArgumentParser(description=description)
-
-    parser.add_argument('input',
-                        help='File or folder')
-
-    return parser.parse_args()
 
 
 class FFProcess(QProcess):
@@ -46,8 +28,8 @@ class FFProcess(QProcess):
 class FFStreamWidget(QtWidgets.QFrame):
     changed = Signal(object)
 
-    def __init__(self, stream: AudioGenerableStream | AudioExistentStream,
-                 streams_of_lang: list[AudioExistentStream | AudioGenerableStream]):
+    def __init__(self, stream: dict,
+                 streams_of_lang: list[dict]):
         super().__init__()
         self.stream = stream
 
@@ -62,19 +44,19 @@ class FFStreamWidget(QtWidgets.QFrame):
 
         # Add "Keep it" option
         if index:
-            self.combo_box.addItem(f'KEEP | {stream['title']}', index)
+            self.combo_box.addItem(f"KEEP | {stream['title']}", index)
 
         # Add "Encrypt" option
         if from_compatible is not None:
             for from_index in from_compatible:
-                def find_stream_fn(x: AudioExistentStream) -> bool: return x.get('index') == from_index
+                def find_stream_fn(x: dict) -> bool: return x.get('index') == from_index
 
                 from_stream = next(x for x in streams_of_lang if find_stream_fn(x))
-                self.combo_box.addItem(f'GENERATE FROM | {from_stream['title']}', from_stream['index'])
+                self.combo_box.addItem(f"GENERATE FROM | {from_stream['title']}", from_stream['index'])
 
         # Add "Remove option"
         if stream.get('index'):
-            self.combo_box.addItem(f'REMOVE | {stream['title']}', None)
+            self.combo_box.addItem(f"REMOVE | {stream['title']}", None)
         else:
             self.combo_box.addItem(f'DO NOT GENERERATE', None)
 
@@ -107,11 +89,11 @@ class FFReplexGui(QtWidgets.QMainWindow):
 
     ffclient = FFClient()
 
-    streams: AllStreamsWithGenerables = FFClient.ff_create_empty_data()
-    initial_streams: AllStreams = FFClient.ff_create_empty_data()
+    streams: dict = FFClient.ff_create_empty_data()
+    initial_streams: dict = FFClient.ff_create_empty_data()
     files: list[str] = []
 
-    def __init__(self):
+    def __init__(self, path: str):
         super().__init__()
         self.system_ffmpeg = FFReplexGui.ffclient.ff_get_info()
 
@@ -124,8 +106,8 @@ class FFReplexGui(QtWidgets.QMainWindow):
         self.remaining_tasks = 0
 
         # Parse args and find files
-        options = get_options()
-        pathabs = os.path.abspath(options.input)
+        pathabs = os.path.abspath(path)
+
         self.files = list_files(pathabs, re.compile(r'\.mkv$'))
         self.dir = pathabs if os.path.isdir(pathabs) else None
 
@@ -165,7 +147,7 @@ class FFReplexGui(QtWidgets.QMainWindow):
 
         self.file_widget = QtWidgets.QLabel(f'{len(self.files)} files – {self.files[0]}')
         self.video_widget = QtWidgets.QLabel(
-            f'Video : {len(self.streams['video'])} streams – {self.streams['video'][0]['width']}x{self.streams['video'][0]['height']} | {self.streams['video'][0]['display_aspect_ratio']}')
+            f"Video : {len(self.streams['video'])} streams – {self.streams['video'][0]['width']}x{self.streams['video'][0]['height']} | {self.streams['video'][0]['display_aspect_ratio']}")
         self.layout.addWidget(self.file_widget)
         self.layout.addWidget(self.video_widget)
         self.layout.addWidget(self.scroll_view)
@@ -202,10 +184,8 @@ class FFReplexGui(QtWidgets.QMainWindow):
 
                 self.audio_widgets[i]['streams'][j].changed.connect(self.on_change)
 
-    @Slot(AudioExistentStream, int)
-    @Slot(AudioExistentStream, None)
-    @Slot(AudioGenerableStream, int)
-    @Slot(AudioGenerableStream, None)
+    @Slot(dict, int)
+    @Slot(dict, None)
     def on_change(self, arg):
         stream, new_index = arg
         stream['from_index'] = new_index
@@ -288,20 +268,65 @@ class FFReplexGui(QtWidgets.QMainWindow):
             asyncio.run(wait())
         command = self.commands[next_command_id]
         self.console.appendPlainText(f' === Starting process of file #{next_command_id} on thread [{index}]\n\n')
-        self.console.appendPlainText(f' > {command[0]} {' '.join(command[1])}\n')
+        self.console.appendPlainText(f" > {command[0]} {' '.join(command[1])}\n")
         pathlib.Path(os.path.dirname(command[2])).mkdir(parents=True, exist_ok=True)
         self.processes[index].start(command[0], command[1])
 
 
+class FFReplexPortal(QtWidgets.QFrame):
+
+    loaded = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.layout = QtWidgets.QVBoxLayout()
+        self.file_button = QtWidgets.QPushButton('Open file...')
+        self.folder_button = QtWidgets.QPushButton('Open folder...')
+        self.layout.addWidget(self.file_button)
+        self.layout.addWidget(self.folder_button)
+        self.setLayout(self.layout)
+        self.file_button.clicked.connect(self.open_file)
+        self.folder_button.clicked.connect(self.open_folder)
+
+    @Slot()
+    def open_file(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName()
+        # print('FILE', path)
+        if path is not None:
+            self.loaded.emit(path)
+
+    @Slot()
+    def open_folder(self):
+        path = QtWidgets.QFileDialog.getExistingDirectory()
+        # print('FOLDER', path)
+        if path is not None:
+            self.loaded.emit(path)
+
+
+class WindowManager(QObject):
+
+    def __init__(self):
+        super().__init__()
+        self.portal_window = FFReplexPortal()
+        self.portal_window.loaded.connect(self.open_item)
+        self.main_window = None
+        self.portal_window.show()
+
+    @Slot(str)
+    def open_item(self, path: str):
+        self.main_window = FFReplexGui(path)
+        self.main_window.show()
+        self.portal_window.close()
+
+
 if __name__ == "__main__":
+
     app = QtWidgets.QApplication([])
 
     app.setApplicationName("FFReplex")
     app.setApplicationDisplayName("FFReplex")
     app.setApplicationVersion("0.1.0")
 
-    window = FFReplexGui()
-    window.show()
-    window.print_console()
+    manager = WindowManager()
 
     sys.exit(app.exec())

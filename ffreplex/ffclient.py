@@ -1,13 +1,12 @@
 """Client functions to call ffmpeg subprocesses"""
 import json
 import os
-import pprint
 import re
 import shutil
 import subprocess
 import itertools
 from io import StringIO
-from typing import TypedDict, Dict, List, Tuple
+from typing import TypedDict
 
 STANDARD_AUDIO_LAYOUTS = [
     'mono',
@@ -52,11 +51,11 @@ STEREO_COMPATIBLE = ['stereo', 'downmix']
 FIVE_ONE_COMPATIBLE = ['5.1', '5.1(side)']
 SEVEN_ONE_COMPATIBLE = ['7.1', '7.1(wide)',  '7.1(wide-side)', '7.1(top)']
 
-type I_downmix_for_layout = tuple[list[str], str, str]
-type I_downmixes_map_for_layout = list[I_downmix_for_layout]
-type I_downmixes_map = dict[str, I_downmixes_map_for_layout]
+# type I_downmix_for_layout = tuple[list[str], str, str]
+# type I_downmixes_map_for_layout = list[I_downmix_for_layout]
+# type I_downmixes_map = dict[str, I_downmixes_map_for_layout]
 
-COMPATIBLE_DOWNMIXES: I_downmixes_map = {
+COMPATIBLE_DOWNMIXES: dict[str, list[tuple[list[str], str, str]]] = {
     'stereo': [
         (FIVE_ONE_COMPATIBLE, 'volume=1.66, pan=stereo|c0=0.5*c2+0.707*c0+0.707*c4+0.5*c3|c1=0.5*c2+0.707*c1+0.707*c5+0.5*c3', 'aac_at'),  # 5.1 to stereo
         (SEVEN_ONE_COMPATIBLE, 'volume=1.66, pan=stereo|c0=0.5*c2+0.707*c0+0.707*c4+0.5*c3|c1=0.5*c2+0.707*c1+0.707*c5+0.5*c3', 'aac_at')  # 7.1 to stereo TODO change downmix function here
@@ -72,58 +71,57 @@ COMPATIBLE_DOWNMIX_LAYOUTS = {
 }
 
 
-
 class AudioTrack:
     """represent ane existing audio track in input media"""
     index: int
     type: str
 
 
-class GenerableStream(TypedDict):
-    from_index: int | None
-    from_compatible: list[int] | None
+# class GenerableStream(TypedDict):
+#     from_index: int | None
+#     from_compatible: list[int] | None
 
 
-class ExistentStream(GenerableStream):
-    index: int
+# class ExistentStream(GenerableStream):
+#     index: int
 
 
-class AudioGenerableStream(GenerableStream):
-    layout: str
-    title: str
+# class AudioGenerableStream(GenerableStream):
+#     layout: str
+#     title: str
 
 
-class AudioExistentStream(ExistentStream):
-    layout: str
-    title: str
+# class AudioExistentStream(ExistentStream):
+#     layout: str
+#     title: str
 
 
-class VideoExistentStream(ExistentStream):
-    display_aspect_ratio: str
-    width: int
-    height: int
+# class VideoExistentStream(ExistentStream):
+#     display_aspect_ratio: str
+#     width: int
+#     height: int
 
 
-type ExistentStreamList = list[ExistentStream]
+# type ExistentStreamList = list[ExistentStream]
 
-type AudioStreamList = dict[str, list[AudioExistentStream]]
-type AudioGenerableStreamList = dict[str, list[AudioExistentStream | AudioGenerableStream]]
+# type AudioStreamList = dict[str, list[AudioExistentStream]]
+# type AudioGenerableStreamList = dict[str, list[AudioExistentStream | AudioGenerableStream]]
 
-type VideoStreamList = list[VideoExistentStream]
-
-
-class AllStreams(TypedDict):
-    video: VideoStreamList
-    audio: AudioStreamList
-    subtitle: ExistentStreamList
-    other: ExistentStreamList
+# type VideoStreamList = list[VideoExistentStream]
 
 
-class AllStreamsWithGenerables(TypedDict):
-    video: VideoStreamList
-    audio: AudioGenerableStreamList
-    subtitle: ExistentStreamList
-    other: ExistentStreamList
+# class AllStreams(TypedDict):
+#     video: VideoStreamList
+#     audio: AudioStreamList
+#     subtitle: ExistentStreamList
+#     other: ExistentStreamList
+
+
+# class AllStreamsWithGenerables(TypedDict):
+#     video: VideoStreamList
+#     audio: AudioGenerableStreamList
+#     subtitle: ExistentStreamList
+#     other: ExistentStreamList
 
 
 class FFClient:
@@ -164,7 +162,7 @@ class FFClient:
         if not data:
             raise TypeError()
 
-        streams: AllStreams = FFClient.ff_create_empty_data()
+        streams: dict = FFClient.ff_create_empty_data()
         for stream in data:
             if stream['codec_type'] == 'video':
                 streams['video'].append({
@@ -207,9 +205,9 @@ class FFClient:
             return -1
 
     @staticmethod
-    def populate_generable_streams(streams: AllStreams) -> AllStreamsWithGenerables:
+    def populate_generable_streams(streams: dict) -> dict:
         """generate generable streams information and return all streams plus the generable ones"""
-        streams_with_generables: AllStreamsWithGenerables = {'video': [stream for stream in streams['video']],
+        streams_with_generables: dict = {'video': [stream for stream in streams['video']],
                                                              'audio': {},
                                                              'subtitle': [stream for stream in streams['subtitle']],
                                                              'other': [stream for stream in streams['other']]}
@@ -219,7 +217,7 @@ class FFClient:
             existent_streams_of_lang: list = streams_with_generables['audio'][lang]
             if len(existent_streams_of_lang) == 0:
                 continue
-            generable_streams_of_lang: list[AudioGenerableStream] = []
+            generable_streams_of_lang: list[dict] = []
 
             for stream in existent_streams_of_lang:
                 if stream['layout'] in STEREO_COMPATIBLE:
@@ -268,16 +266,16 @@ class FFClient:
         return streams_with_generables
 
     @staticmethod
-    def audio_lang_has_stereo(streams: list[AudioExistentStream]):
+    def audio_lang_has_stereo(streams: list[dict]):
         return any(stream['layout'] in STEREO_COMPATIBLE for stream in streams)
 
     @staticmethod
-    def audio_lang_has_five(streams: list[AudioExistentStream]):
+    def audio_lang_has_five(streams: list[dict]):
         return any(stream['layout'] in FIVE_ONE_COMPATIBLE
                    for stream in streams)
 
     @staticmethod
-    def ff_get_command_args(streams: AllStreamsWithGenerables, iostream: StringIO) -> list[str]:
+    def ff_get_command_args(streams: dict, iostream: StringIO) -> list[str]:
 
         args = ["-strict", "-2",
                 "-global_quality:a", "0"]
@@ -285,7 +283,7 @@ class FFClient:
         # video
         current_video_index_out = 0
         for stream in streams['video']:
-            args.extend(['-map', f'0:{stream['index']}', f'-c:v:{current_video_index_out}', 'copy'])
+            args.extend(['-map', f"0:{stream['index']}", f'-c:v:{current_video_index_out}', 'copy'])
             current_video_index_out = current_video_index_out + 1
 
         # audio
@@ -305,23 +303,23 @@ class FFClient:
                 else:
                     if index is not None and from_index == index:
                         # Copy audio
-                        args.extend(['-map', f'0:{stream['from_index']}', f'-c:a:{current_audio_index_out}', 'copy'])
+                        args.extend(['-map', f"0:{stream['from_index']}", f'-c:a:{current_audio_index_out}', 'copy'])
                         print(f'   KEEP ─ 0:a:{current_audio_index_out} {lang}({layout}) FROM 0:{from_index} {lang}({layout})', file=iostream)
 
                     elif from_index is not None:
                         # Convert audio
-                        def find_stream_fn(x: AudioExistentStream) -> bool:
+                        def find_stream_fn(x: dict) -> bool:
                             return x.get('index') == from_index
                         from_stream = next(x for x in streams_of_lang if find_stream_fn(x))
                         from_layout = from_stream.get('layout')
                         print(f'CONVERT ┬ 0:a:{current_audio_index_out} {lang}({layout}) FROM 0:{from_index} {lang}({from_layout})', file=iostream)
 
-                        def find_downstream(x: I_downmix_for_layout) -> bool:
+                        def find_downstream(x: tuple[list[str], str, str]) -> bool:
                             return from_layout in x[0]
                         downmix_from, downmix_filter, downmix_codec = next(x for x in COMPATIBLE_DOWNMIXES[layout] if find_downstream(x))
                         print(f"        └── with : {downmix_filter}, {downmix_codec}", file=iostream)
 
-                        args.extend(['-map', f'0:{stream['from_index']}', f'-c:a:{current_audio_index_out}',
+                        args.extend(['-map', f"0:{stream['from_index']}", f'-c:a:{current_audio_index_out}',
                                      downmix_codec, f'-filter:a:{current_audio_index_out}', f'{downmix_filter}'])
 
                     current_audio_index_out = current_audio_index_out + 1
@@ -329,11 +327,11 @@ class FFClient:
         # subtitles
         current_other_index_out = current_video_index_out + current_audio_index_out
         for stream in streams['subtitle']:
-            args.extend(['-map', f'0:{stream['index']}', f'-c:{current_other_index_out}', 'mov_text'])
+            args.extend(['-map', f"0:{stream['index']}", f'-c:{current_other_index_out}', 'mov_text'])
             current_other_index_out = current_other_index_out + 1
         # other
         for stream in streams['other']:
-            args.extend(['-map', f'0:{stream['index']}', f'-c:{current_other_index_out}', 'copy'])
+            args.extend(['-map', f"0:{stream['index']}", f'-c:{current_other_index_out}', 'copy'])
             current_other_index_out = current_other_index_out + 1
 
         return args
@@ -352,7 +350,7 @@ class FFClient:
         return program, arguments, out_file
 
     @staticmethod
-    def ff_get_commands(files: list[str], streams: AllStreamsWithGenerables, rootdir: str | None, iostream: StringIO):
+    def ff_get_commands(files: list[str], streams: dict, rootdir: str | None, iostream: StringIO):
         args = FFClient.ff_get_command_args(streams, iostream)
         commands = [FFClient.ff_get_command(file, args, rootdir) for file in files]
         return commands
